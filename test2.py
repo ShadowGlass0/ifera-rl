@@ -31,6 +31,42 @@ import torch
 # rewards = env.rollout_all(actor_net, env.steps + 1)
 
 # rewards
-print(torch.cuda.is_available())
 
-x = torch.tensor([1, 2, 3], device="cuda:0")
+import time
+import torch
+from tqdm import tqdm
+
+t1 = torch.arange(0, 5, device='cuda', dtype=torch.float32)
+t2 = torch.arange(0, 10, device='cuda', dtype=torch.float32)
+
+# pb1 = tqdm.tqdm(t1, 'Outer loop', position=0)
+
+# for i in pb1:
+#     pb2 = tqdm.tqdm(t2, 'Inner loop', position=1)
+#     for j in pb2:
+#         time.sleep(0.1)
+
+# pb1 = tqdm(total=t1.numel(), position=0, desc='Outer loop')
+# pb2 = tqdm(total=t2.numel(), position=1, desc='Inner loop')
+
+# with pb1:
+#     for i in t1:
+#         pb1.update(1)
+#         pb2.reset()
+#         with pb2:
+#             for j in t2:
+#                 pb2.update(1)
+#                 time.sleep(0.1)
+
+pb1 = tqdm(total=len(t1), desc='Outer loop', position=0)
+pb2 = tqdm(total=len(t2), desc='Inner loop', position=1)
+
+for i in range(len(t1)):
+    pb2.reset()
+
+    for j in range(len(t2)):
+        time.sleep(0.3)
+        pb2.update(1)
+
+    pb1.update(1)
+

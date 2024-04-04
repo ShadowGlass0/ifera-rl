@@ -81,37 +81,45 @@ filename : str
     Path to json file.
 """ 
 class InstrumentConfig:
-    __instance = None
+    def __init__(self, filename="data/instruments.json"):
+        self.data = None
+        self.filename = filename
+        self._load_data()
 
-    def __new__(cls, filename="data/instruments.json", reset=False):
-        if InstrumentConfig.__instance is None or reset:
-            InstrumentConfig.__instance = object.__new__(cls)
-            InstrumentConfig.__instance.data = None
-            InstrumentConfig.__instance.filename = filename
-        return InstrumentConfig.__instance
+    def _load_data(self):
+        """
+        Loads data from a JSON file and updates the `data` attribute.
 
-    def load_data(self):
-        if self.data is None:
-            with open(self.filename, 'r') as f:
-                self.data = json.load(f)
-            self.last_update = pl.Path(self.filename).stat().st_mtime
-        return self.data
+        Reads the contents of the specified file and stores it in the `data` attribute.
+        Also updates the `last_update` attribute with the modification time of the file.
 
-    """
-    Get instrument configuration.
+        Args:
+            None
 
-    Parameters
-    ----------
-    instrument : str
-        Instrument config symbol, <symbol>@<broker>:<interval>, e.g. "BTCUSD@bitfinex:1m".
+        Returns:
+            None
+        """
 
-    Returns
-    -------
-    config : dict
-        Instrument configuration.
-    """
+        with open(self.filename, 'r') as f:
+            self.data = json.load(f)
+        self.last_update = pl.Path(self.filename).stat().st_mtime
+
     def get_config(self, instrument):
-        data = self.load_data()
+        """
+        Get instrument configuration.
+
+        Parameters
+        ----------
+        instrument : str
+            Instrument config symbol, <symbol>@<broker>:<interval>, e.g. "BTCUSD@bitfinex:1m".
+
+        Returns
+        -------
+        config : dict
+            Instrument configuration.
+        """
+
+        data = self.data
         instrument = InstrumentData(**data[instrument])
         instrument.last_update = self.last_update
         return instrument
@@ -125,18 +133,19 @@ def make_path(raw: bool, instrument: InstrumentData, remove_file: bool=False, sp
     ----------
     raw : bool
         If True, load raw data, else load processed data.
-    instrument_type : str
-        Instrument type, e.g. "crypto", "forex", "stock".
-    symbol : str
-        Instrument symbol, e.g. "BTCUSD", "EURUSD", "AAPL".
-    interval : str
-        Interval, e.g. "1m", "1h", "1d".
+    instrument : InstrumentData
+        Instrument configuration.
+    remove_file : bool, optional
+        If True, remove file. The default is False.
+    special_interval : str, optional
+        Special interval, e.g. "fulldays", "shortdays". The default is None.
 
     Returns
     -------
     path : pathlib.Path
         Path to csv file.
     """
+
     if raw:
         source = "raw"
     else:
@@ -155,26 +164,30 @@ def make_path(raw: bool, instrument: InstrumentData, remove_file: bool=False, sp
     return path
 
 
-
 def load_data(raw: bool, instrument: InstrumentData, dtype="float32", reset: bool=False):
     """
     Load data from csv files.
+
+    This function loads data from csv files based on the specified parameters. It can load either raw data or processed data.
+    If raw data is requested, the function checks if the file exists. If it doesn't exist or if the reset flag is set to True,
+    the function downloads the raw data and processes it. If the processed data file is older than the raw data file or the
+    instrument's last update, the function reprocesses the data.
 
     Parameters
     ----------
     raw : bool
         If True, load raw data, else load processed data.
-    instrument_type : str
-        Instrument type, e.g. "crypto", "forex", "stock".
-    symbol : str
-        Instrument symbol, e.g. "BTCUSD", "EURUSD", "AAPL".
-    interval : str
-        Interval, e.g. "1m", "1h", "1d".
+    instrument : InstrumentData
+        Instrument data object containing information about the instrument.
+    dtype : str, optional
+        Data type for the numerical columns in the dataframe. Default is "float32".
+    reset : bool, optional
+        If True, reset the processed data and reprocess it. Default is False.
 
     Returns
     -------
     df : pd.DataFrame
-        Dataframe containing data.
+        Dataframe containing the loaded data.
     """
 
     path = make_path(raw, instrument)
@@ -198,10 +211,10 @@ def load_data(raw: bool, instrument: InstrumentData, dtype="float32", reset: boo
         else ["date", "time", "trade_date", "offset_time", "open", "high", "low", "close", "volume"]
 
     # In the processed files, dates are represented in ordinal format and times are in seconds, both as integers.
-    dtype = {"open": dtype, "high": dtype, "low": dtype, "close": dtype, "volume": "int32"} if raw \
+    dtypes = {"open": dtype, "high": dtype, "low": dtype, "close": dtype, "volume": "int32"} if raw \
         else {"open": dtype, "high": dtype, "low": dtype, "close": dtype, "volume": "int32", "date": "int32", "time": "int32", "trade_date": "int32", "offset_time": "int32"}
 
-    df = pd.read_csv(path, header=None, parse_dates=False, names=columns, dtype=dtype)
+    df = pd.read_csv(path, header=None, parse_dates=False, names=columns, dtype=dtypes)
 
     if raw:
         df['date_time'] = pd.to_datetime(df['date'] + ' ' + df['time'])
@@ -302,7 +315,7 @@ def process_data(instrument: InstrumentData, reset: bool=False):
     # Filter out the days that are not full trading days
     df = df[df["trade_date"].isin(full_days.index)]
 
-    # Group the DataFrame by date and apply the function to each group
+    # Group the DataFrame by date and add missing rows for each time step
     df = df.groupby('trade_date').apply(add_missing_rows, start_time=start_time, end_time=end_time, time_step=time_step).reset_index(drop=True)
 
     # Filter out the rows that are outside the trading hours
@@ -441,6 +454,26 @@ def sma(x: torch.Tensor, window: int):
     return torch.cat((torch.full((window-1,), x[0], device=x.device, dtype=x.dtype), x)).unfold(dimension=0, size=window, step=1).mean(dim=1)
 
 
+def sortino(x: torch.Tensor):
+    """
+    Calculate the Sortino ratio of a tensor. The Sortino ratio is the ratio of the mean of the tensor to the downside deviation.
+    This version is modified by adding 1 to the mean and the downside deviation before calculating the ratio. This ensures continuity in edge cases.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor. Must be 1-dimensional. Values should be between -1 and 1.
+
+    Returns
+    -------
+    y : torch.Tensor
+        Output tensor.
+    """
+    neg = x[x < 0]
+    dr = (neg * neg).sum().sqrt() / x.numel()
+    return (x.mean() + 1.0) / (dr + 1.0) - 1.0
+
+
 def load_instrument_data_tensor(instrument: InstrumentData, dtype: torch.dtype = torch.float32, device: torch.device = torch.device("cpu")):
     """
     Load data from csv files and return as a tensor.
@@ -495,9 +528,10 @@ class PriceDataWindow(nn.Module):
     def n_channels(self) -> int:
         return self.price_data.shape[-1]
 
-    def forward(self, date_idx: torch.Tensor, time_idx: int) -> torch.Tensor:
-        time_indices = self.range.unsqueeze(0) + time_idx
-        date_indices = date_idx.unsqueeze(-1)
+    def forward(self, date_idx: torch.Tensor, time_idx: torch.Tensor) -> torch.Tensor:
+        #print(date_idx.shape, time_idx.shape)
+        time_indices = repeat(self.range, 'w -> b w', b=date_idx.shape[0]) + repeat(time_idx, 'b -> b w', w=self.window_size)
+        date_indices = repeat(date_idx, 'b -> b w', w=self.window_size)
 
         return self.price_data[date_indices, time_indices, :]
 
@@ -518,8 +552,8 @@ class PriceDataWindow(nn.Module):
         price_data = []
         
         # Normalize time to [0, 1]
-        time = data[:, :, 0]
-        price_data.append(time / SECONDS_IN_DAY)
+        # time = data[:, :, 0]
+        # price_data.append(time / SECONDS_IN_DAY)
         # price_data.append(torch.sin(time))
         # price_data.append(torch.cos(time))
 
@@ -528,9 +562,9 @@ class PriceDataWindow(nn.Module):
 
         # log(high/low), log(high/close), log(close/low), log(close/prev_close), log(high/prev_close), log(low/prev_close)
         col_log_start = len(price_data)
-        price_data.append((data[:, :, 2] / data[:, :, 3]).log())
-        price_data.append((data[:, :, 2] / data[:, :, 4]).log())
-        price_data.append((data[:, :, 4] / data[:, :, 3]).log())
+        # price_data.append((data[:, :, 2] / data[:, :, 3]).log())
+        # price_data.append((data[:, :, 2] / data[:, :, 4]).log())
+        # price_data.append((data[:, :, 4] / data[:, :, 3]).log())
         price_data.append((data[:, :, 4] / prev_close).log())
         price_data.append((data[:, :, 2] / prev_close).log())
         price_data.append((data[:, :, 3] / prev_close).log())
@@ -721,8 +755,8 @@ class IntradayEnv:
 
     def reset(self, risk_adjustment_factor = None, date_idx: torch.Tensor = None) -> dict:
         self.date_idx = next(self.iter_loader)[0].view(self.batch_size) if date_idx is None else date_idx
-        self.time_idx = self.start_time_idx
-        self.position = torch.zeros_like(self.date_idx, dtype=torch.int64, device=self.device)
+        self.time_idx = torch.full_like(self.date_idx, self.start_time_idx, dtype=torch.int64, device=self.device)
+        self.pos_idx = torch.full_like(self.date_idx, self.max_units, dtype=torch.int64, device=self.device)
         self.done = torch.zeros_like(self.date_idx, dtype=torch.bool, device=self.device)
         
         day_open_price = self.data[self.date_idx, self.start_time_idx, self.channels['open']]
@@ -732,40 +766,56 @@ class IntradayEnv:
         out = {
             'date_idx': self.date_idx,
             'time_idx': self.time_idx,  
-            'position': self.position,
+            'pos_idx': self.pos_idx,
             'done': self.done,
             'reward': torch.zeros_like(self.date_idx, dtype=self.dtype, device=self.device),
         }
 
         return out
     
+    #@torch.compile(mode="max-autotune")
     def step(self, target_pos: torch.Tensor) -> dict:
         self.time_idx += 1
-        self.done = self.done | torch.full_like(self.done, self.time_idx >= self.end_time_idx, device=self.device, dtype=torch.bool)
+        self.done = self.done | (self.time_idx >= self.end_time_idx)
 
+        position = self.pos_idx - self.max_units
         # Force to close all positions at the end of the day
-        action = torch.where(self.done, 0, target_pos) - self.position
+        
+        action = torch.where(self.done, 0, target_pos) - position
 
-        profit, self.position = self.market_sim.calculate_step(self.date_idx, self.time_idx, self.position, action * self.unit_size)
+        profit, position = self.market_sim.calculate_step(self.date_idx, self.time_idx, position, action * self.unit_size)
+        self.pos_idx = position + self.max_units
 
         reward = profit / self.reference_capital * self.reward_scaling
 
         out = {
             'date_idx': self.date_idx,
             'time_idx': self.time_idx,  
-            'position': self.position,
+            'pos_idx': self.pos_idx,
             'done': self.done,
             'reward': reward,
         }
 
         return out
     
-    def rollout(self, policy: nn.Module, n_steps: int, risk_adjustment_factor: torch.Tensor = None, date_idx: torch.Tensor = None) -> torch.Tensor:
+    #@torch.compile(mode="max-autotune")
+    def rollout(self, policy: nn.Module, n_steps: int, risk_adjustment_factor: torch.Tensor = None, date_idx: torch.Tensor = None, exploration_type: str = "mode") -> torch.Tensor:
+        torch.compiler.cudagraph_mark_step_begin()
         out = self.reset(risk_adjustment_factor, date_idx)
         cum_reward = out['reward']
 
         for _ in range(n_steps):
-            action = policy(out['date_idx'], out['time_idx'], out['position'])
+            probs = policy(out['date_idx'], out['time_idx'], out['pos_idx'])
+            dist = Categorical(probs=probs)
+            
+            if exploration_type == "mode":
+                action = dist.mode
+            elif exploration_type == "sample":
+                action = dist.sample()
+            else:
+                raise ValueError("Invalid exploration type")
+            
+            action = action - self.max_units
             out = self.step(action)
             cum_reward += out['reward']
 
@@ -774,12 +824,13 @@ class IntradayEnv:
         
         return cum_reward
 
-    def rollout_all(self, policy: nn.Module, n_steps: int, risk_adjustment_factor: torch.Tensor = None) -> torch.Tensor:
+    #@torch.compile()
+    def rollout_all(self, policy: nn.Module, n_steps: int, risk_adjustment_factor: torch.Tensor = None, exploration_type: str = "mode") -> torch.Tensor:
         loader = DataLoader(TensorDataset(self.data_indices), batch_size=self.batch_size.numel(), shuffle=False, drop_last=False)
         cum_reward = torch.zeros_like(self.data_indices, dtype=self.dtype, device=self.device)
 
         for date_idx in loader:
-            cum_reward[date_idx[0]] = self.rollout(policy, n_steps, risk_adjustment_factor, date_idx[0])
+            cum_reward[date_idx[0]] = self.rollout(policy, n_steps, risk_adjustment_factor, date_idx[0], exploration_type = exploration_type)
 
         return cum_reward
 
@@ -787,30 +838,37 @@ class IntradayEnv:
 class EnvOutTransform(nn.Module):
     def __init__(self, env: IntradayEnv, out_channels: torch.Tensor, dtype: torch.dtype = None) -> None:
         super().__init__()
+        self.env = env
         self.window_size = env.window_size
         self.out_channels = out_channels
-        self.max_units = env.max_units
         self.n_position = env.n_position
         self.device = env.device
         self.dtype = dtype if dtype is not None else env.dtype
 
         self.price_data_window = PriceDataWindow(env.data, window_size=env.window_size, dtype=self.dtype)
+        self.time = (env.data[:, :, 0] / SECONDS_IN_DAY).to(dtype=self.dtype)
 
         self.lin_data = nn.Linear(self.price_data_window.n_channels, out_channels, device=self.device, dtype=self.dtype)
-        self.lin_pos = nn.Linear(self.n_position, out_channels, device=self.device, dtype=self.dtype)
+        self.lin_pos = nn.Linear(self.n_position + 1, out_channels, device=self.device, dtype=self.dtype)
 
         self.pos = nn.Parameter(torch.zeros((env.window_size + 1, out_channels), dtype=self.dtype, device=self.device))
 
     #@torch.compile(mode="max-autotune")
-    def forward(self, date_idx: torch.Tensor, time_idx: torch.Tensor, position: torch.Tensor) -> torch.Tensor:
+    def forward(self, date_idx: torch.Tensor, time_idx: torch.Tensor, pos_idx: torch.Tensor) -> torch.Tensor:
         # batch_size, window_size, price_data channels
         price_data = self.price_data_window(date_idx, time_idx)
         
         # batch_size, n_position
-        one_hot_pos = F.one_hot(position + self.max_units, num_classes=self.n_position).to(dtype=self.dtype)
+        one_hot_pos = F.one_hot(pos_idx, num_classes=self.n_position)
+
+        # batch_size, 1
+        time = self.time[date_idx, time_idx].unsqueeze(-1)
+        
+        # batch_size, n_position + 1
+        one_hot_pos = torch.cat((one_hot_pos, time), dim=-1).to(dtype=self.dtype)
         
         # batch_size, window_size, out_channels
-        data_out = self.lin_data(price_data) 
+        data_out = self.lin_data(price_data)
 
         # batch_size, out_channels
         pos_out = self.lin_pos(one_hot_pos)
@@ -823,6 +881,7 @@ class EnvOutTransform(nn.Module):
 
 class ActorNetHidden(nn.Sequential):
     def __init__(self, hidden_size: int, device, dtype) -> None:
+        self.dtype = dtype
         super().__init__(
             Rearrange('... w c -> ... (w c)'),
             nn.LazyLinear(hidden_size, device=device, dtype=dtype),
@@ -844,39 +903,34 @@ class MyAvgPool(nn.Module):
 
 
 class ActorPostProcess(nn.Module):
-    def __init__(self, env: IntradayEnv, device, dtype, dist_return: str = 'sample') -> None:
+    def __init__(self, env: IntradayEnv, device, dtype) -> None:
         super().__init__()
-        # Rearrange('... w c -> ... c w'),
         # MyAvgPool(),
         self.linear = nn.LazyLinear(env.n_position, device=device, dtype=dtype)
-        self.dist_return = dist_return
-        self.max_units = env.max_units
+        self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.softmax(self.linear(x), dim=-1)
-        dist = Categorical(probs=x)
-        
-        if self.dist_return == 'sample':
-            res = dist.sample()
-        elif self.dist_return == 'mode':
-            res = dist.mode
-        else:
-            raise ValueError(f"Invalid dist_return: {self.dist_return}")
-        
-        return res - self.max_units
+        x = rearrange(x, 'b ... -> b (...)')
+        return self.softmax(self.linear(x))
 
     
 class ActorNet(nn.Module):
-    def __init__(self, env: IntradayEnv, d_model: int, main_module: nn.Module, dist_return: str = 'sample') -> None:
+    def __init__(self, env: IntradayEnv, d_model: int, main_module: nn.Module) -> None:
         super().__init__()
         
-        self.end_out_transform = EnvOutTransform(env, d_model)
+        try :
+            self.dtype = main_module.dtype
+        except AttributeError:
+            self.dtype = env.dtype
+
+        self.dtype = env.dtype if self.dtype is None else self.dtype
+        self.env_out_transform = EnvOutTransform(env, d_model, dtype=self.dtype)
         self.main_module = main_module
-        self.post_process = ActorPostProcess(env, device=env.device, dtype=env.dtype, dist_return=dist_return)
+        self.post_process = ActorPostProcess(env, device=env.device, dtype=self.dtype)
     
-    #@torch.compile()
-    def forward(self, date_idx: torch.Tensor, time_idx: torch.Tensor, position: torch.Tensor) -> torch.Tensor:
-        out = self.end_out_transform(date_idx, time_idx, position)
+    #@torch.compile(mode="max-autotune")
+    def forward(self, date_idx: torch.Tensor, time_idx: torch.Tensor, pos_idx: torch.Tensor) -> torch.Tensor:
+        out = self.env_out_transform(date_idx, time_idx, pos_idx)
         out = self.main_module(out)
         out = self.post_process(out)
         return out
@@ -906,11 +960,73 @@ class ValueNet(nn.Module):
         return out
 
 
-class ValueManager:
-    def __init__(self, env: IntradayEnv, cache_profits: bool = False, risk_factor_mult: float = 1.5) -> None:
+class ProfitManager:
+    def __init__(self, env: IntradayEnv, cache_profits: bool = False) -> None:
         self.env: Final = env
         self.instrument: Final = env.instrument
         self.cache_profits: Final = cache_profits
+        self.market_sim: Final = env.market_sim
+        self.max_units: Final = env.max_units
+        self.n_position: Final = env.n_position
+        self.start_time_idx: Final = env.start_time_idx
+        self.risk_adjustment_factor = 1.0
+
+        steps = env.steps
+        n_dates = len(env.data_indices)
+        
+        date_idx = env.data_indices
+        pos = torch.arange(-self.max_units, self.max_units + 1, device=env.device, dtype=torch.int32)
+        self.target_pos_range = torch.arange(-self.max_units, self.max_units + 1, device=env.device, dtype=torch.int32)
+
+        self.date_idx = repeat(date_idx, 'd -> d p1 p2', p1=self.n_position, p2=self.n_position)
+        self.pos = repeat(pos, 'p1 -> d p1 p2', d=n_dates, p2=self.n_position)
+        self.target_pos = repeat(self.target_pos_range, 'p2 -> d p1 p2', d=n_dates, p1=self.n_position)
+        self.action = self.target_pos - self.pos
+
+        if cache_profits:
+            self.profits = torch.zeros((n_dates, steps, self.n_position, self.n_position) , dtype=env.dtype, device=env.device)
+            
+            # Pre-calculate profits for all possible actions
+            for i in range(steps):
+                profit, _ = self.market_sim.calculate_step(self.date_idx, i + self.start_time_idx, self.pos, self.action)
+                self.profits[:, i, :, :] = profit
+
+    
+    def get_profits(self, time_idx: int) -> torch.Tensor:
+        if self.cache_profits:
+            return self.profits[:, time_idx, :, :]
+        
+        profit, _ = self.env.market_sim.calculate_step(self.date_idx, time_idx + self.start_time_idx, self.pos, self.action)
+        return profit / self.risk_adjustment_factor
+    
+    
+    def get_profits_batch(self, date_idx: torch.Tensor, time_idx: torch.Tensor, pos_idx: torch.Tensor) -> torch.Tensor:
+        if self.cache_profits:
+            return self.profits[date_idx, time_idx, pos_idx, :]
+        
+        batch_size = date_idx.numel()
+        position = repeat(pos_idx - self.max_units, 'b -> b p', p=self.n_position)
+        action = repeat(self.target_pos_range, 'p -> b p', b=batch_size) - position
+        date_idx = repeat(date_idx, 'b -> b p', p=self.n_position)
+        time_idx = repeat(time_idx + self.env.start_time_idx, 'b -> b p', p=self.n_position)
+        profit, _ = self.market_sim.calculate_step(date_idx, time_idx, position, action)
+        
+        return profit / self.risk_adjustment_factor
+    
+    def apply_risk_adjustment(self, risk_adjustment_factor: float) -> None:
+        factor = risk_adjustment_factor / self.risk_adjustment_factor
+
+        if self.cache_profits:
+            self.profits = self.profits / factor
+
+        self.risk_adjustment_factor = risk_adjustment_factor
+                
+
+class ValueManager:
+    def __init__(self, env: IntradayEnv, pm: ProfitManager, risk_factor_mult: float = 1.5) -> None:
+        self.env: Final = env
+        self.instrument: Final = env.instrument
+        self.pm: Final = pm
 
         steps = env.steps
         n_dates = len(env.data_indices)
@@ -920,83 +1036,74 @@ class ValueManager:
         unit_size = env.unit_size
         n_position = env.n_position
 
-        self.optimal_values = torch.full((n_dates, steps, n_position), -np.inf, dtype=env.dtype, device=env.device)
-        self.worst_values = torch.full((n_dates, steps, n_position), np.inf, dtype=env.dtype, device=env.device)
+        self.optimal_values = torch.zeros((n_dates, steps + 1, n_position), dtype=env.dtype, device=env.device)
+        self.worst_values = torch.zeros((n_dates, steps + 1, n_position), dtype=env.dtype, device=env.device)
 
         date_idx = env.data_indices
-        pos = torch.arange(-max_units, max_units + 1, device=env.device, dtype=torch.int32)
-        self.target_pos_range = torch.arange(-max_units, max_units + 1, device=env.device, dtype=torch.int32)
-
         self.date_idx = repeat(date_idx, 'd -> d p1 p2', p1=n_position, p2=n_position)
-        self.pos = repeat(pos, 'p1 -> d p1 p2', d=n_dates, p2=n_position)
-        self.target_pos = repeat(self.target_pos_range, 'p2 -> d p1 p2', d=n_dates, p1=n_position)
-        self.action = self.target_pos_range - pos
 
         day_open_price = data[date_idx, env.start_time_idx, env.channels['open']]
-        reference_capital = day_open_price * instrument.contractMultiplier * max_units * unit_size
+        reference_capital = day_open_price * self.instrument.contractMultiplier * max_units * unit_size
         self.reference_capital = repeat(reference_capital, 'd -> d p p2', p=n_position, p2=n_position)
 
-        if cache_profits:
-            self.profits = torch.zeros((n_dates, steps, n_position, n_position) , dtype=env.dtype, device=env.device)
-            
-            # Pre-calculate profits for all possible actions
-            for i in range(steps):
-                profit, _ = market_sim.calculate_step(date_idx, i + env.start_time_idx, pos, action)
-                profit = (profit / reference_capital)
-                self.profits[:, i, :, :] = profit
-
         # Last time step, the action is fixed to 0 target_position (close all positions)
-        profit = self._get_profits(-1)
+        profit = self.pm.get_profits(steps - 1)
         profit = repeat(profit[:, :, max_units], 'd p -> d p p2', p=n_position, p2=n_position)
-        self.optimal_values[:, -1, :] = (profit).max(dim=2)[0]
-        self.worst_values[:, -1, :] = (profit).min(dim=2)[0]
+        self.optimal_values[:, steps - 1, :] = (profit).max(dim=2)[0]
+        self.worst_values[:, steps - 1, :] = (profit).min(dim=2)[0]
 
-        target_pos_idx = self.target_pos + max_units
+        target_pos_idx = repeat(torch.arange(n_position, device=env.device, dtype=torch.int32), 'p2 -> d p1 p2', d=n_dates, p1=n_position)
 
         for i in range(steps - 2, -1, -1):
-            profit = self._get_profits(i)
-            self.optimal_values[:, i, :] = (profit + self.optimal_values[date_idx, i + 1, target_pos_idx]).max(dim=2)[0]
-            self.worst_values[:, i, :] = (profit + self.worst_values[date_idx, i + 1, target_pos_idx]).min(dim=2)[0]
+            profit = self.pm.get_profits(i) / self.reference_capital
+            self.optimal_values[:, i, :] = (profit + self.optimal_values[self.date_idx, i + 1, target_pos_idx]).max(dim=2)[0]
+            self.worst_values[:, i, :] = (profit + self.worst_values[self.date_idx, i + 1, target_pos_idx]).min(dim=2)[0]
 
-        self.risk_adjustment_factor: Final = torch.max(-self.worst_values.min(), self.optimal_values.max(), env.margin_multiplier) * risk_factor_mult
+        self.risk_adjustment_factor: Final = np.max((-self.worst_values.min().item(), self.optimal_values.max().item(), env.margin_multiplier)) * risk_factor_mult
         self.optimal_values: Final = self.optimal_values / self.risk_adjustment_factor
         self.reference_capital: Final = self.reference_capital * self.risk_adjustment_factor
-        
-        if cache_profits:
-            self.profits: Final = self.profits / self.risk_adjustment_factor
+        self.pm.apply_risk_adjustment(self.risk_adjustment_factor)
         
         # We don't need the worst values anymore
         self.worst_values = None
 
-    def _get_profits(self, time_idx: int) -> torch.Tensor:
-        if self.cache_profits:
-            return self.profits[:, time_idx, :, :]
-        
-        profit, _ = self.env.market_sim.calculate_step(self.date_idx, time_idx + self.env.start_time_idx, self.pos, self.action)
-        return profit / self.reference_capital
-    
-    def _get_profits_batch(self, date_idx: torch.Tensor, time_idx: torch.Tensor, pos_idx: torch.Tensor) -> torch.Tensor:
-        if self.cache_profits:
-            return self.profits[date_idx, time_idx, pos_idx, :]
-        
-        batch_size = date_idx.numel()
-        position = pos_idx - self.env.max_units
-        action = repeat(self.target_pos_range, 'p -> b p', b=batch_size) - position
-        profit, _ = self.env.market_sim.calculate_step(date_idx, time_idx + self.env.start_time_idx, position, action)
-        
-        return profit / self.reference_capital[date_idx, pos_idx, action + self.env.max_units].unsqueeze(-1)
-
     def optimal_action_values(self, date_idx: torch.Tensor, time_idx: torch.Tensor, pos_idx: torch.Tensor) -> torch.Tensor:
-        profit = self._get_profits_batch(date_idx, time_idx, pos_idx)
+        profit = self.pm.get_profits_batch(date_idx, time_idx, pos_idx) / self.reference_capital[date_idx, pos_idx, :]
         
         return profit + self.optimal_values[date_idx, time_idx + 1, :]
 
 
 class OptimalValueLoss(nn.Module):
-    def __init__(self, value_manager: ValueManager, reduction: str = 'mean') -> None:
+    def __init__(self, value_manager: ValueManager, reduction: str = 'mean', cache_losses: bool = False, model_dtype: torch.dtype = None) -> None:
         super().__init__()
         self.value_manager: Final = value_manager
         self.reduction: Final = reduction
+        self.dtype = model_dtype if model_dtype is not None else value_manager.env.dtype
+        self.device = value_manager.env.device
+        self.cache_losses = cache_losses
+
+        if cache_losses:
+            n_dates = len(value_manager.env.data_indices)
+            n_position = value_manager.env.n_position
+            n_steps = value_manager.env.steps
+
+            self.losses = torch.zeros((n_dates, n_steps, n_position, n_position), dtype=self.dtype, device=self.device)
+            pos_idx = torch.arange(n_position, device=self.device, dtype=torch.int32)
+            date_idx = value_manager.env.data_indices
+
+            pos_idx = repeat(pos_idx, 'p -> (d p)', d=n_dates)
+            date_idx = repeat(date_idx, 'd -> (d p)', p=n_position)
+
+            for i in range(n_steps):
+                time_idx = repeat(torch.tensor([i], device=self.device, dtype=torch.int32), '() -> (d p)', d=n_dates, p=n_position)
+                optimal_values = self.value_manager.optimal_action_values(date_idx, time_idx, pos_idx)
+                optimal_values = rearrange(optimal_values, '(d p) p2 -> d p p2', p=n_position)
+                
+                value_loss = optimal_values.max(dim=2, keepdim=True)[0] - optimal_values
+                self.losses[:, i, :, :] = value_loss
+
+            self.losses = self.losses / self.losses.std()
+            self.losses = self.losses.to(dtype=self.dtype)
 
     def forward(self, date_idx: torch.Tensor, time_idx: torch.Tensor, pos_idx: torch.Tensor, inputs: torch.Tensor) -> torch.Tensor:
         """
@@ -1018,9 +1125,18 @@ class OptimalValueLoss(nn.Module):
         loss : torch.Tensor
             Loss tensor. Shape: (batch_size,).
         """
-        optimal_values = self.value_manager.optimal_action_values(date_idx, time_idx, pos_idx)
-        value_loss = optimal_values.max(dim=1)[0] - optimal_values
-        weighted_squared_loss = (inputs * value_loss).pow(2).sum(dim=1)
+        
+        if self.cache_losses:
+            value_loss = self.losses[date_idx, time_idx, pos_idx, :]
+        else:
+            optimal_values = self.value_manager.optimal_action_values(date_idx, time_idx, pos_idx)
+            value_loss = optimal_values.max(dim=1, keepdim=True)[0] - optimal_values
+            value_loss = value_loss / value_loss.std()
+            value_loss = value_loss.to(dtype=self.dtype)
+
+        weighted_squared_loss = inputs * value_loss
+        weighted_squared_loss = weighted_squared_loss * weighted_squared_loss
+        weighted_squared_loss = weighted_squared_loss.sum(dim=1)
 
         if self.reduction == 'mean':
             return weighted_squared_loss.mean()
